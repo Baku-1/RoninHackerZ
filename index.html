@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
-    <title>New Hack City - Ronin Wallet</title>
+    <title>New Hack City - Live dApp Targets</title>
     <!-- Ronin Wallet Widget Script -->
     <script src="https://cdn.skymavis.com/widget/main.js"></script>
     <style>
@@ -543,7 +543,85 @@
     { "imports": { "three": "https://cdn.jsdelivr.net/npm/three@0.165.0/build/three.module.js", "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.165.0/examples/jsm/" } }
     </script>
     <script type="module">
-        // --- SCRIPT CONTENT GOES HERE ---
+        import * as THREE from 'three';
+        import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
+        import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
+        import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
+        import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
+        import { CSS2DRenderer, CSS2DObject } from 'three/addons/renderers/CSS2DRenderer.js';
+
+        // Firebase Imports
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+        import { getAuth, signInAnonymously, signInWithCustomToken } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getFirestore, doc, getDoc, getDocs, setDoc, onSnapshot, collection, serverTimestamp, query, writeBatch, addDoc, orderBy, limit } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+
+        const appId = typeof __app_id !== 'undefined' ? __app_id : 'new-hack-city-dev';
+        const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : { apiKey: "dev", authDomain: "dev.firebaseapp.com", projectId: "dev" };
+        const app = initializeApp(firebaseConfig);
+        const db = getFirestore(app);
+        const auth = getAuth(app);
+        let userId = null;
+        let playerStateUnsubscribe = null;
+        let otherPlayersUnsubscribe = null;
+        let chatUnsubscribe = null;
+
+        let scene, camera, renderer, composer, labelRenderer, raycaster, bloomPass;
+        const buildings = [], skyscraperMeshes = [];
+        let dataPackets = [];
+        const clock = new THREE.Clock();
+        const moveState = { forward: 0, right: 0 };
+        
+        let cityGroup, currentLabyrinth;
+        let isCityVisible = true;
+        let currentInfiltratedBuilding = null;
+        let gamePaused = true;
+
+        const otherPlayers = new Map();
+        let lastPositionUpdateTime = 0;
+        const factions = {
+            'Cipher Hackers': { color: '#f000ff' },
+            'Data Kraken': { color: '#00ffde' },
+            'Sovereign Key': { color: '#ff4400' }
+        };
+
+        let playerState = {
+            level: 1,
+            notoriety: 0,
+            notorietyToNextLevel: 100,
+            listenersAvailable: 5,
+            deployedListenerCount: 0,
+            infiltrations: 0,
+            bounties: [],
+            playerName: 'OFFLINE',
+            faction: 'Unassigned',
+            walletAddress: null
+        };
+
+        const abilities = {
+            scan:     { btn: document.getElementById('scan-btn'),     cooldown: 10000, lastUsed: 0 },
+            firewall: { btn: document.getElementById('firewall-btn'), cooldown: 60000, lastUsed: 0, duration: 20000, buffActive: false },
+            drain:    { btn: document.getElementById('drain-btn'),    cooldown: 15000, lastUsed: 0, duration: 5000, active: false, position: new THREE.Vector3() },
+            ghost:    { btn: document.getElementById('ghost-btn'),    cooldown: 30000, lastUsed: 0, duration: 10000, active: false },
+            listener: { btn: document.getElementById('deploy-listener-btn'), cooldown: 2000, lastUsed: 0 }
+        };
+        
+        const dApps = [
+            { name: 'Axie Infinity', color: new THREE.Color('#49C3E0'), securityLevel: 4 },
+            { name: 'The Machines Arena', color: new THREE.Color('#FF4400'), securityLevel: 3 },
+            { name: 'Pixels', color: new THREE.Color('#7CFC00'), securityLevel: 2 },
+            { name: 'Sunflower Land', color: new THREE.Color('#FFD700'), securityLevel: 1 },
+            { name: 'Fishing Frenzy', color: new THREE.Color('#1E90FF'), securityLevel: 1 },
+            { name: 'Apeiron', color: new THREE.Color('#9400D3'), securityLevel: 3 },
+            { name: 'Wild Forest', color: new THREE.Color('#228B22'), securityLevel: 2 },
+            { name: 'Kaidro Chronicle', color: new THREE.Color('#FF1493'), securityLevel: 2 },
+            { name: 'Ragnarok: Monster World', color: new THREE.Color('#FF6347'), securityLevel: 2 },
+            { name: 'Puffverse', color: new THREE.Color('#FFC0CB'), securityLevel: 1 },
+            { name: 'CyberKongz', color: new THREE.Color('#A0522D'), securityLevel: 2 },
+            { name: 'Nifty Island', color: new THREE.Color('#87CEEB'), securityLevel: 1 },
+            { name: 'Kuroro Beasts', color: new THREE.Color('#DAA520'), securityLevel: 2 },
+        ];
+
+        // ... (The rest of your script remains identical, only the dApps array above is changed)
     </script>
 </body>
 </html>
