@@ -12,15 +12,7 @@ This project is a cyberpunk-themed open world hacking adventure on the Ronin cha
 - **Faction System:** Players choose factions and compete for city dominance.
 - **Puzzle Mini-games:** Skill-based challenges for rewards.
 - **Responsive Design:** Mobile and desktop support with touch and drag controls.
-
-## P2P Trading System Vision
-
-> Ronin P2P is designed as a secure peer-to-peer trading platform where users can open trades and post them in a grid view. Other users can view and propose up to three modifications to the agreement, supporting up to 5 NFTs and/or tokens per trade. All trade details remain off-chain until both parties approve the trade.
->
-> - **Fee Structure:** 95% of fees are split between two wallets: Admin and Treasury Manager. The remaining 5% is pooled and distributed weekly as rewards to the top 5 users (with declining percentages).
-> - **Security:** Final approval by both parties triggers collateral capture and atomic batch settlement to the respective wallets.
-> - **Minimal Dependencies:** Designed for security, transparency, and efficiency.
-
+  
 ## Getting Started
 
 1. **Clone the Repository:**
@@ -41,11 +33,11 @@ This project is a cyberpunk-themed open world hacking adventure on the Ronin cha
 
 - **Frontend:** Vanilla JS, HTML5, CSS3, Three.js for 3D graphics
 - **Wallet:** [Ronin Wallet Widget](https://docs.skymavis.com/ronin-wallet/widget/)
-- **Backend (future):** Smart contracts for P2P, leaderboard, rewards
+- **Backend (future):** Smart contracts for leaderboard, rewards
 
 ## Roadmap
 
-- [ ] Implement smart contract for P2P trading logic
+- [ ] Implement smart contract for logic
 - [ ] Integrate weekly rewards pool and leaderboard-based payouts
 - [ ] NFT and Token escrow/collateralization
 - [ ] Enhanced city and player interactions
