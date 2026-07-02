@@ -21,9 +21,14 @@ This project is a cyberpunk-themed open world hacking adventure on the Ronin cha
    cd RoninHackerZ
    ```
 
-2. **Serve Locally:**
-   - Open `index.html` in your browser, or
-   - Use a local development server (e.g., VS Code Live Server).
+2. **Install & Run the Server:**
+   ```bash
+   npm install
+   npm start
+   ```
+   Then open [http://localhost:3000](http://localhost:3000). The Node server serves the game
+   and runs the realtime multiplayer backend (player state, position sync, chat, leaderboard)
+   over WebSockets. Player data persists to `server/data.json`.
 
 3. **Connect Ronin Wallet:**
    - Click "Connect Ronin Wallet" on the landing screen.
@@ -33,7 +38,8 @@ This project is a cyberpunk-themed open world hacking adventure on the Ronin cha
 
 - **Frontend:** Vanilla JS, HTML5, CSS3, Three.js for 3D graphics
 - **Wallet:** [Ronin Wallet Widget](https://docs.skymavis.com/ronin-wallet/widget/)
-- **Backend (future):** Smart contracts for leaderboard, rewards
+- **Backend:** Self-hosted Node.js WebSocket server (`ws`), JSON file persistence
+- **Future:** Smart contracts for leaderboard rewards, server-authoritative validation
 
 ## Roadmap
 
@@ -42,6 +48,37 @@ This project is a cyberpunk-themed open world hacking adventure on the Ronin cha
 - [ ] NFT and Token escrow/collateralization
 - [ ] Enhanced city and player interactions
 - [ ] In-game events and missions
+
+## Development
+
+```bash
+npm run lint   # ESLint over client, server, and tests
+npm test       # end-to-end protocol test (boots the real server)
+```
+
+The client lives in `public/` as native ES modules (no build step): `js/main.js` is the
+entry point, with `game.js` (Three.js world/gameplay), `net.js` (WebSocket client),
+`ui.js` (HUD/modals/chat), `state.js` (player state + persistence), and `audio.js`.
+
+## Deployment
+
+The server binds plain HTTP/WS on `PORT` (default 3000). In production, put a TLS
+reverse proxy in front so the page and socket are served over `https://`/`wss://`
+(the client picks `wss` automatically when the page is https). Example with Caddy:
+
+```
+game.example.com {
+    reverse_proxy localhost:3000
+}
+```
+
+(nginx works the same way — proxy `/` to the port with `Upgrade`/`Connection` headers
+for WebSocket.) Run the process under a supervisor (systemd, pm2) so it restarts on
+failure.
+
+**Important:** player data persists to `server/data.json` (gitignored). Back it up and
+keep it on a persistent volume — a redeploy that wipes the working directory wipes
+playtest progress with it.
 
 ## Contributing
 
