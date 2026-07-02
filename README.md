@@ -21,9 +21,14 @@ This project is a cyberpunk-themed open world hacking adventure on the Ronin cha
    cd RoninHackerZ
    ```
 
-2. **Serve Locally:**
-   - Open `index.html` in your browser, or
-   - Use a local development server (e.g., VS Code Live Server).
+2. **Install & Run the Server:**
+   ```bash
+   npm install
+   npm start
+   ```
+   Then open [http://localhost:3000](http://localhost:3000). The Node server serves the game
+   and runs the realtime multiplayer backend (player state, position sync, chat, leaderboard)
+   over WebSockets. Player data persists to `server/data.json`.
 
 3. **Connect Ronin Wallet:**
    - Click "Connect Ronin Wallet" on the landing screen.
@@ -33,7 +38,8 @@ This project is a cyberpunk-themed open world hacking adventure on the Ronin cha
 
 - **Frontend:** Vanilla JS, HTML5, CSS3, Three.js for 3D graphics
 - **Wallet:** [Ronin Wallet Widget](https://docs.skymavis.com/ronin-wallet/widget/)
-- **Backend (future):** Smart contracts for leaderboard, rewards
+- **Backend:** Self-hosted Node.js WebSocket server (`ws`), JSON file persistence
+- **Future:** Smart contracts for leaderboard rewards, server-authoritative validation
 
 ## Roadmap
 

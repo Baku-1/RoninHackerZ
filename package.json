@@ -1,0 +1,17 @@
+{
+  "name": "roninhackerz",
+  "version": "0.1.0",
+  "private": true,
+  "description": "New Hack City - a cyberpunk open world hacking adventure on Ronin",
+  "main": "server/server.js",
+  "scripts": {
+    "start": "node server/server.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "ws": "^8.18.0"
+  },
+  "license": "MIT"
+}

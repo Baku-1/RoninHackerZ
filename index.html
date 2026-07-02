@@ -551,20 +551,74 @@
         import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
         import { CSS2DRenderer, CSS2DObject } from 'three/addons/renderers/CSS2DRenderer.js';
 
-        // Firebase Imports
-        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
-        import { getAuth, signInAnonymously, signInWithCustomToken } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
-        import { getFirestore, doc, getDoc, getDocs, setDoc, onSnapshot, collection, serverTimestamp, query, writeBatch, addDoc, orderBy, limit } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
-
-        const appId = typeof __app_id !== 'undefined' ? __app_id : 'new-hack-city-dev';
-        const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : { apiKey: "dev", authDomain: "dev.firebaseapp.com", projectId: "dev" };
-        const app = initializeApp(firebaseConfig);
-        const db = getFirestore(app);
-        const auth = getAuth(app);
+        // Game server connection (WebSocket). The server lives in server/server.js and
+        // serves this page, so it's always reachable at the page's own host.
         let userId = null;
-        let playerStateUnsubscribe = null;
-        let otherPlayersUnsubscribe = null;
-        let chatUnsubscribe = null;
+        const net = {
+            ws: null,
+            reqId: 0,
+            pending: new Map(),
+            connect(wallet) {
+                return new Promise((resolve, reject) => {
+                    const proto = location.protocol === 'https:' ? 'wss' : 'ws';
+                    const ws = new WebSocket(`${proto}://${location.host}`);
+                    const timeout = setTimeout(() => { ws.close(); reject(new Error('Game server connection timed out.')); }, 8000);
+                    ws.onopen = () => ws.send(JSON.stringify({ t: 'hello', wallet }));
+                    ws.onmessage = (event) => {
+                        let msg;
+                        try { msg = JSON.parse(event.data); } catch { return; }
+                        if (msg.t === 'welcome') {
+                            clearTimeout(timeout);
+                            this.ws = ws;
+                            resolve(msg);
+                            return;
+                        }
+                        handleServerMessage(msg);
+                    };
+                    ws.onerror = () => { clearTimeout(timeout); reject(new Error('Could not reach the game server.')); };
+                    ws.onclose = () => {
+                        this.ws = null;
+                        if (userId) showModal("Connection Lost", "Disconnected from the game server. Refresh to reconnect.");
+                    };
+                });
+            },
+            send(obj) { if (this.ws && this.ws.readyState === WebSocket.OPEN) this.ws.send(JSON.stringify(obj)); },
+            request(t, extra = {}) {
+                return new Promise((resolve) => {
+                    const reqId = ++this.reqId;
+                    this.pending.set(reqId, resolve);
+                    this.send({ t, reqId, ...extra });
+                });
+            }
+        };
+
+        function handleServerMessage(msg) {
+            switch (msg.t) {
+                case 'state':
+                    Object.assign(playerState, msg.state);
+                    updateAllUI();
+                    break;
+                case 'player':
+                    upsertRemotePlayer(msg.id, msg.data);
+                    break;
+                case 'playerLeft':
+                    removePlayer(msg.id);
+                    break;
+                case 'chat':
+                    appendChatMessage(msg.msg);
+                    break;
+                case 'chatHistory': {
+                    document.getElementById('chat-messages').innerHTML = '';
+                    (msg.msgs || []).forEach(appendChatMessage);
+                    break;
+                }
+                case 'leaderboard': {
+                    const resolve = net.pending.get(msg.reqId);
+                    if (resolve) { net.pending.delete(msg.reqId); resolve(msg); }
+                    break;
+                }
+            }
+        }
 
         let scene, camera, renderer, composer, labelRenderer, raycaster, bloomPass;
         const buildings = [], skyscraperMeshes = [];
@@ -666,7 +720,6 @@
             setInterval(generateDataTransfer, 200);
             setInterval(() => { if(abilities.ghost.active) return; const blip = document.getElementById('radar-blip'); blip.style.left = `${20 + Math.random() * 60}%`; blip.style.top = `${20 + Math.random() * 60}%`; blip.classList.toggle('active'); setTimeout(() => blip.classList.remove('active'), 500); }, 3000);
             setInterval(simulateHighPriorityData, 15000);
-            setInterval(cleanupInactivePlayers, 15000); 
             setupModals();
             initPuzzle();
             returnToCity();
@@ -1188,23 +1241,13 @@
             ];
         }
 
-        async function savePlayerState() {
-            if (!userId) return;
+        function savePlayerState() {
             updateAllUI();
-            try {
-                const playerDocRef = doc(db, 'artifacts', appId, 'users', userId, 'nhc_player_state', 'data');
-                await setDoc(playerDocRef, { ...playerState }, { merge: true });
-                const publicDocRef = doc(db, 'artifacts', appId, 'public/data/players', userId);
-                await setDoc(publicDocRef, {
-                    playerName: playerState.playerName,
-                    faction: playerState.faction,
-                    level: playerState.level,
-                    infiltrations: playerState.infiltrations || 0,
-                    lastSeen: serverTimestamp()
-                }, { merge: true });
-            } catch (error) {
-                console.error("Error saving player state:", error);
-            }
+            if (!userId) return;
+            const { level, notoriety, notorietyToNextLevel, listenersAvailable, deployedListenerCount,
+                    infiltrations, bounties, playerName, faction, walletAddress } = playerState;
+            net.send({ t: 'save', state: { level, notoriety, notorietyToNextLevel, listenersAvailable,
+                    deployedListenerCount, infiltrations, bounties, playerName, faction, walletAddress } });
         }
 
         const positionSync = { lastWrite: 0, lastPos: new THREE.Vector3(Infinity, Infinity, Infinity) };
@@ -1212,20 +1255,10 @@
             if (!userId) return;
             const now = Date.now();
             const moved = camera.position.distanceToSquared(positionSync.lastPos) > 1;
-            // Skip the write when idle, but heartbeat every 10s so cleanupInactivePlayers
-            // doesn't reap players who are standing still.
             if (!moved && now - positionSync.lastWrite < 10000) return;
             positionSync.lastWrite = now;
             positionSync.lastPos.copy(camera.position);
-            const publicDocRef = doc(db, 'artifacts', appId, 'public/data/players', userId);
-            setDoc(publicDocRef, {
-                playerName: playerState.playerName,
-                faction: playerState.faction,
-                infiltrations: playerState.infiltrations || 0,
-                position: camera.position.toArray(),
-                quaternion: camera.quaternion.toArray(),
-                lastSeen: serverTimestamp()
-            }, { merge: true }).catch(error => console.error("Error syncing position:", error));
+            net.send({ t: 'pos', p: camera.position.toArray(), q: camera.quaternion.toArray() });
         }
 
         // No audio assets ship with the prototype, so synthesize short cues with WebAudio.
@@ -1471,29 +1504,22 @@
                 }
                 playerState.walletAddress = accounts[0];
 
+                const welcome = await net.connect(accounts[0]);
+                userId = welcome.id;
 
-                if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
-                    await signInWithCustomToken(auth, __initial_auth_token);
-                } else {
-                    await signInAnonymously(auth);
-                }
-                userId = auth.currentUser.uid;
-                
-                const playerDocRef = doc(db, 'artifacts', appId, 'users', userId, 'nhc_player_state', 'data');
-                const playerDocSnap = await getDoc(playerDocRef);
-
-                if (playerDocSnap.exists() && playerDocSnap.data().faction && playerDocSnap.data().faction !== 'Unassigned') {
+                if (welcome.state && welcome.state.faction && welcome.state.faction !== 'Unassigned') {
+                    Object.assign(playerState, welcome.state);
                     await loadAndStartGame();
                 } else {
                     showFactionChoice();
                 }
 
-            } catch (err) { 
-                console.error("Failed to connect wallet or load data:", err); 
-                showModal("Connection Error", "Could not connect Ronin Wallet. Please try again.");
-                btn.textContent = 'Connect Ronin Wallet'; 
-                btn.disabled = false; 
-            } 
+            } catch (err) {
+                console.error("Failed to connect wallet or load data:", err);
+                showModal("Connection Error", err.message || "Could not connect Ronin Wallet. Please try again.");
+                btn.textContent = 'Connect Ronin Wallet';
+                btn.disabled = false;
+            }
         }
 
         function setupModals() {
@@ -1534,36 +1560,27 @@
             document.getElementById('personal-infiltrations').textContent = playerState.infiltrations || 0;
             
             try {
-                const playersRef = collection(db, 'artifacts', appId, 'public/data/players');
-                const snapshot = await getDocs(playersRef);
-                
-                let totalInfiltrations = 0;
-                let playerCount = 0;
-                const allPlayers = [];
+                const result = await net.request('leaderboard');
+                document.getElementById('average-infiltrations').textContent = (result.average || 0).toFixed(2);
 
-                snapshot.forEach(doc => {
-                    const data = doc.data();
-                    if(data.infiltrations !== undefined) {
-                        totalInfiltrations += data.infiltrations;
-                        playerCount++;
-                    }
-                    allPlayers.push({ name: data.playerName || 'Hacker', score: data.infiltrations || 0 });
-                });
+                list.innerHTML = '';
+                const top10 = result.top || [];
 
-                const average = playerCount > 0 ? (totalInfiltrations / playerCount) : 0;
-                document.getElementById('average-infiltrations').textContent = average.toFixed(2);
-                
-                allPlayers.sort((a, b) => b.score - a.score);
-                
-                list.innerHTML = ''; 
-                const top10 = allPlayers.slice(0, 10);
-                
                 if (top10.length === 0) {
                      list.innerHTML = '<li>No ranked players yet.</li>';
                 } else {
                     top10.forEach((player, index) => {
                         const item = document.createElement('li');
-                        item.innerHTML = `<span class="leaderboard-rank">${index + 1}.</span> <span class="leaderboard-name">${player.name}</span> <span class="leaderboard-score">${player.score}</span>`;
+                        const rank = document.createElement('span');
+                        rank.className = 'leaderboard-rank';
+                        rank.textContent = `${index + 1}.`;
+                        const name = document.createElement('span');
+                        name.className = 'leaderboard-name';
+                        name.textContent = player.name;
+                        const score = document.createElement('span');
+                        score.className = 'leaderboard-score';
+                        score.textContent = player.score;
+                        item.append(rank, ' ', name, ' ', score);
                         list.appendChild(item);
                     });
                 }
@@ -1614,49 +1631,28 @@
             };
         }
 
-        async function sendChatMessage() {
+        function sendChatMessage() {
             const input = document.getElementById('chat-input');
             const message = input.value.trim();
             if(message === '' || !userId) return;
-
-            const chatMessage = {
-                userId: userId,
-                playerName: playerState.playerName,
-                faction: playerState.faction,
-                message: message,
-                timestamp: serverTimestamp()
-            };
-
-            try {
-                await addDoc(collection(db, 'artifacts', appId, 'public/data/chat_messages'), chatMessage);
-                input.value = '';
-            } catch (error) {
-                console.error("Error sending chat message:", error);
-            }
+            net.send({ t: 'chat', message });
+            input.value = '';
         }
 
-        function listenForChat() {
-            if(chatUnsubscribe) chatUnsubscribe();
-            const chatRef = collection(db, 'artifacts', appId, 'public/data/chat_messages');
-            const q = query(chatRef, orderBy('timestamp', 'desc'), limit(50));
-            
-            chatUnsubscribe = onSnapshot(q, (snapshot) => {
-                const messagesDiv = document.getElementById('chat-messages');
-                messagesDiv.innerHTML = '';
-                const messages = [];
-                snapshot.forEach(doc => messages.push(doc.data()));
-                messages.reverse().forEach(data => {
-                    const msgEl = document.createElement('div');
-                    msgEl.className = 'chat-message';
-                    
-                    const factionInfo = factions[data.faction] || { color: '#aaaaaa' };
-                    const playerNameSpan = `<span style="color: ${factionInfo.color};">${data.playerName || 'Hacker'}:</span>`;
-                    
-                    msgEl.innerHTML = `${playerNameSpan} ${data.message}`;
-                    messagesDiv.appendChild(msgEl);
-                });
-                messagesDiv.scrollTop = messagesDiv.scrollHeight;
-            });
+        // Player names and messages are user-controlled, so build the DOM with
+        // textContent rather than innerHTML.
+        function appendChatMessage(data) {
+            const messagesDiv = document.getElementById('chat-messages');
+            const msgEl = document.createElement('div');
+            msgEl.className = 'chat-message';
+            const factionInfo = factions[data.faction] || { color: '#aaaaaa' };
+            const nameSpan = document.createElement('span');
+            nameSpan.style.color = factionInfo.color;
+            nameSpan.textContent = `${data.playerName || 'Hacker'}: `;
+            msgEl.appendChild(nameSpan);
+            msgEl.appendChild(document.createTextNode(data.message || ''));
+            messagesDiv.appendChild(msgEl);
+            messagesDiv.scrollTop = messagesDiv.scrollHeight;
         }
 
 
@@ -1696,60 +1692,43 @@
         }
 
         async function loadAndStartGame() {
-            if (playerStateUnsubscribe) playerStateUnsubscribe(); 
-            const playerDocRef = doc(db, 'artifacts', appId, 'users', userId, 'nhc_player_state', 'data');
-            
-            playerStateUnsubscribe = onSnapshot(playerDocRef, (snapshot) => {
-                if(snapshot.exists()) {
-                    Object.assign(playerState, snapshot.data());
-                    updateAllUI();
-                } else {
-                    selectFaction('Solo');
-                }
-            });
-            
-            listenForOtherPlayers();
-            listenForChat();
-
-            document.getElementById('landing-overlay').style.display = 'none'; 
+            updateAllUI();
+            // Roster, chat history, and state updates all arrive as server
+            // messages via handleServerMessage after the welcome handshake.
+            document.getElementById('landing-overlay').style.display = 'none';
             playSound('sound-ambient', 0.3);
             gamePaused = false;
         }
 
-        function listenForOtherPlayers() {
-            const playersRef = collection(db, 'artifacts', appId, 'public/data/players');
-            otherPlayersUnsubscribe = onSnapshot(playersRef, (snapshot) => {
-                snapshot.docChanges().forEach((change) => {
-                    const playerData = change.doc.data();
-                    const changedUserId = change.doc.id;
+        // Player names are user-controlled, so build labels with textContent.
+        function setPlayerLabel(element, playerData) {
+            const factionInfo = factions[playerData.faction] || { color: '#aaaaaa' };
+            const factionDisplay = (playerData.faction && playerData.faction !== 'Solo' && playerData.faction !== 'Unassigned') ? `[${playerData.faction}]` : '';
+            element.textContent = '';
+            element.appendChild(document.createTextNode(playerData.playerName || 'Hacker'));
+            element.appendChild(document.createElement('br'));
+            element.appendChild(document.createTextNode(factionDisplay));
+            element.style.color = factionInfo.color;
+            element.style.borderColor = factionInfo.color;
+        }
 
-                    if (changedUserId === userId) return;
+        function upsertRemotePlayer(id, playerData) {
+            if (id === userId || !playerData) return;
 
-                    if (change.type === "added" || change.type === "modified") {
-                        if (!otherPlayers.has(changedUserId)) {
-                            const playerAvatar = createPlayerAvatar(playerData);
-                            scene.add(playerAvatar);
-                            otherPlayers.set(changedUserId, { avatar: playerAvatar, data: playerData, targetPosition: new THREE.Vector3(), targetQuaternion: new THREE.Quaternion() });
-                        }
-                        
-                        const player = otherPlayers.get(changedUserId);
-                        player.data = playerData;
-                        if(playerData.position) player.targetPosition.fromArray(playerData.position);
-                        if(playerData.quaternion) player.targetQuaternion.fromArray(playerData.quaternion);
-                        
-                        const label = player.avatar.getObjectByProperty('type', 'CSS2DObject');
-                        if (label) {
-                            const factionInfo = factions[playerData.faction] || { color: '#aaaaaa' };
-                            const factionDisplay = (playerData.faction && playerData.faction !== 'Solo' && playerData.faction !== 'Unassigned') ? `[${playerData.faction}]` : '';
-                            label.element.innerHTML = `${playerData.playerName || 'Hacker'}<br>${factionDisplay}`;
-                            label.element.style.color = factionInfo.color;
-                            label.element.style.borderColor = factionInfo.color;
-                        }
-                    } else if (change.type === "removed") {
-                        removePlayer(changedUserId);
-                    }
-                });
-            });
+            if (!otherPlayers.has(id)) {
+                const playerAvatar = createPlayerAvatar(playerData);
+                playerAvatar.visible = isCityVisible;
+                scene.add(playerAvatar);
+                otherPlayers.set(id, { avatar: playerAvatar, data: playerData, targetPosition: playerAvatar.position.clone(), targetQuaternion: new THREE.Quaternion() });
+            }
+
+            const player = otherPlayers.get(id);
+            player.data = playerData;
+            if(playerData.position) player.targetPosition.fromArray(playerData.position);
+            if(playerData.quaternion) player.targetQuaternion.fromArray(playerData.quaternion);
+
+            const label = player.avatar.getObjectByProperty('type', 'CSS2DObject');
+            if (label) setPlayerLabel(label.element, playerData);
         }
         
         function removePlayer(playerId) {
@@ -1784,10 +1763,7 @@
             
             const labelDiv = document.createElement('div');
             labelDiv.className = 'player-label';
-            const factionDisplay = (playerData.faction && playerData.faction !== 'Solo' && playerData.faction !== 'Unassigned') ? `[${playerData.faction}]` : '';
-            labelDiv.innerHTML = `${playerData.playerName || 'Hacker'}<br>${factionDisplay}`;
-            labelDiv.style.color = factionInfo.color;
-            labelDiv.style.borderColor = factionInfo.color;
+            setPlayerLabel(labelDiv, playerData);
             const nameLabel = new CSS2DObject(labelDiv);
             nameLabel.position.set(0, 12, 0); 
             group.add(nameLabel);
@@ -1795,31 +1771,6 @@
             if(playerData.position) group.position.fromArray(playerData.position);
             return group;
         }
-
-        function cleanupInactivePlayers() {
-            if (otherPlayers.size === 0) return;
-            const now = Date.now();
-            const timeout = 30000;
-            const toDelete = [];
-            otherPlayers.forEach((player, pId) => {
-                if(player.data.lastSeen && player.data.lastSeen.toDate()){
-                   if(now - player.data.lastSeen.toDate().getTime() > timeout) {
-                       toDelete.push(pId);
-                   }
-                }
-            });
-
-            if (toDelete.length > 0) {
-                 const batch = writeBatch(db);
-                 toDelete.forEach(pId => {
-                    const playerDocRef = doc(db, 'artifacts', appId, 'public/data/players', pId);
-                    batch.delete(playerDocRef);
-                    removePlayer(pId);
-                 });
-                 batch.commit().catch(e => console.error("Error cleaning up players:", e));
-            }
-        }
-
 
         document.getElementById('connect-wallet-btn').addEventListener('click', connectAndStart);
         window.addEventListener('resize', onWindowResize);
