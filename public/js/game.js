@@ -11,7 +11,7 @@ import { CSS2DRenderer, CSS2DObject } from 'three/addons/renderers/CSS2DRenderer
 import { playerState, dApps, factions, session, savePlayerState } from './state.js';
 import { net } from './net.js';
 import { playSound } from './audio.js';
-import { showModal, setPlayerLabel, setupModals } from './ui.js';
+import { showModal, setPlayerLabel, setupModals, showPickupToast } from './ui.js';
 
 let scene, camera, renderer, composer, labelRenderer, raycaster, bloomPass;
 const buildings = [], skyscraperMeshes = [];
@@ -26,6 +26,11 @@ let gamePaused = true;
 
 const otherPlayers = new Map();
 let lastPositionUpdateTime = 0;
+
+const SENTRY_RANGE = 120;
+const SENTRY_HALF_ANGLE = Math.PI / 6;
+// Scan in a labyrinth reveals obstacles through walls until this timestamp.
+const scanReveal = { until: 0 };
 
 export function setGamePaused(value) { gamePaused = value; }
 
@@ -153,6 +158,9 @@ function loadLabyrinthLevel(building) {
         group: new THREE.Group(),
         floors: [],
         currentFloor: 0,
+        // Capture the intercept window at entry so the bonus applies even if
+        // the window expires while the player is inside.
+        highPriorityEntry: building.userData.isHighPriority === true,
     };
 
     for(let i = 0; i < floorCount; i++) {
@@ -247,11 +255,42 @@ function teleportToFloor(floorIndex) {
     camera.rotation.set(0, 0, 0);
 }
 
+// A patrol drone with a rendered vision cone. Detection is cone-shaped and
+// blocked by walls, so sentries are a stealth obstacle: stay out of the cone,
+// break line of sight, or use Ghost.
 function createSentry(position) {
-    const sentry = new THREE.Mesh(new THREE.SphereGeometry(5, 8, 8), new THREE.MeshBasicMaterial({color: 0xff4400, wireframe: true}));
+    const sentry = new THREE.Group();
+    const body = new THREE.Mesh(
+        new THREE.SphereGeometry(5, 8, 8),
+        new THREE.MeshBasicMaterial({ color: 0xff4400, wireframe: true, transparent: true, opacity: 0.9 })
+    );
+    sentry.add(body);
+    const coneGeo = new THREE.ConeGeometry(Math.tan(SENTRY_HALF_ANGLE) * SENTRY_RANGE, SENTRY_RANGE, 16, 1, true);
+    coneGeo.rotateX(-Math.PI / 2);          // point the cone along +Z (the group's facing axis)
+    coneGeo.translate(0, 0, SENTRY_RANGE / 2); // apex at the drone, opening outward
+    const cone = new THREE.Mesh(
+        coneGeo,
+        new THREE.MeshBasicMaterial({ color: 0xff4400, transparent: true, opacity: 0.12, side: THREE.DoubleSide, depthWrite: false })
+    );
+    sentry.add(cone);
     sentry.position.copy(position);
     sentry.userData.type = 'sentry';
+    sentry.userData.body = body;
+    sentry.userData.cone = cone;
     return sentry;
+}
+
+function sentryDetects(sentry, floor) {
+    const toPlayer = camera.position.clone().sub(sentry.position);
+    const dist = toPlayer.length();
+    if (dist < 8) return true; // bumped into the drone itself
+    if (dist > SENTRY_RANGE) return false;
+    const facing = new THREE.Vector3(0, 0, 1).applyQuaternion(sentry.quaternion);
+    if (facing.angleTo(toPlayer) > SENTRY_HALF_ANGLE) return false;
+    // Walls block the view: hiding behind one beats the cone.
+    raycaster.set(sentry.position, toPlayer.normalize());
+    const blocked = raycaster.intersectObjects(floor.mazeWalls);
+    return !(blocked.length > 0 && blocked[0].distance < dist);
 }
 
 // A short beam (~2 cells long) that sweeps along the start->end line, so it can
@@ -273,6 +312,7 @@ function distanceToSegment(point, a, b) {
 
 function updateObstacles(delta) {
     if (!currentLabyrinth || gamePaused) return;
+    const revealed = Date.now() < scanReveal.until;
      currentLabyrinth.floors.forEach(floor => {
          floor.obstacles.forEach(obs => {
             if (obs.type === 'laser') {
@@ -282,6 +322,8 @@ function updateObstacles(delta) {
                     obs.progress = Math.max(0, Math.min(1, obs.progress));
                 }
                 obs.mesh.position.lerpVectors(obs.start, obs.end, obs.progress);
+                obs.mesh.material.color.setHex(revealed ? 0xffff00 : 0xff4400);
+                obs.mesh.material.depthTest = !revealed;
             } else if (obs.userData.type === 'sentry') {
                  if (obs.userData.path && obs.userData.path[0] && obs.userData.path[1]) {
                     obs.userData.pathProgress += delta * (obs.userData.speed || 0.2) * obs.userData.pathDirection;
@@ -290,13 +332,30 @@ function updateObstacles(delta) {
                         obs.userData.pathProgress = Math.max(0, Math.min(1, obs.userData.pathProgress));
                     }
                     obs.position.lerpVectors(obs.userData.path[0], obs.userData.path[1], obs.userData.pathProgress);
+                    // Face the direction of travel so the vision cone leads the patrol.
+                    const facingDir = obs.userData.path[1].clone().sub(obs.userData.path[0]).multiplyScalar(obs.userData.pathDirection);
+                    facingDir.y = 0;
+                    if (facingDir.lengthSq() > 0.0001) obs.lookAt(obs.position.clone().add(facingDir));
                 }
+                obs.userData.cone.material.opacity = abilities.ghost.active ? 0.03 : (revealed ? 0.3 : 0.12);
+                obs.userData.body.material.color.setHex(revealed ? 0xffff00 : 0xff4400);
+                obs.userData.body.material.depthTest = !revealed;
+                obs.userData.cone.material.depthTest = !revealed;
             }
         });
      });
 }
 
-let puzzleSequence = [], playerSequence = [], puzzleActive = false, puzzleButtons = [];
+// --- Vault puzzles ---
+// Three types rotate deterministically per building (by name hash), so each
+// dApp has a consistent hack "signature":
+//   sequence — classic follow-the-sequence memory (the original puzzle)
+//   pattern  — a circuit lights up briefly; re-trace it from memory
+//   timing   — a pulse cycles the grid; tap the green node as the pulse hits it
+let puzzleButtons = [];
+let activePuzzle = null;
+
+const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
 
 function initPuzzle() {
     const grid = document.getElementById('puzzle-grid');
@@ -311,63 +370,161 @@ function initPuzzle() {
     }
 }
 
+function puzzleTypeFor(building) {
+    const name = building.userData.name || '';
+    let hash = 0;
+    for (let i = 0; i < name.length; i++) hash = (hash * 31 + name.charCodeAt(i)) >>> 0;
+    return ['sequence', 'pattern', 'timing'][hash % 3];
+}
+
 function startPuzzle() {
     gamePaused = true;
-    puzzleActive = true;
     document.getElementById('puzzle-overlay').style.display = 'flex';
-    puzzleSequence = [];
-    playerSequence = [];
+    if (activePuzzle && activePuzzle.timer) clearInterval(activePuzzle.timer);
+    puzzleButtons.forEach(b => b.classList.remove('lit', 'target'));
     const securityLevel = currentInfiltratedBuilding.userData.securityLevel || 1;
-    const requiredLength = 3 + securityLevel;
-    document.getElementById('puzzle-status').textContent = `Required sequence length: ${requiredLength}. Watch...`;
-    addToPuzzleSequence(requiredLength);
-}
-
-function addToPuzzleSequence(requiredLength) {
-    playerSequence = [];
-    if (puzzleSequence.length < requiredLength) {
-        puzzleSequence.push(Math.floor(Math.random() * 9));
-    }
-    playPuzzleSequence(requiredLength);
-}
-
-async function playPuzzleSequence(requiredLength) {
-    for (const id of puzzleSequence) {
-        await new Promise(resolve => setTimeout(resolve, 500));
-        puzzleButtons[id].classList.add('lit');
-        await new Promise(resolve => setTimeout(resolve, 500));
-        puzzleButtons[id].classList.remove('lit');
-    }
-     document.getElementById('puzzle-status').textContent = `Your turn... (${puzzleSequence.length}/${requiredLength})`;
+    const type = puzzleTypeFor(currentInfiltratedBuilding);
+    if (type === 'sequence') startSequencePuzzle(securityLevel);
+    else if (type === 'pattern') startPatternPuzzle(securityLevel);
+    else startTimingPuzzle(securityLevel);
 }
 
 function handlePuzzleClick(id) {
-    if (!puzzleActive || playerSequence.length >= puzzleSequence.length) return;
+    if (!activePuzzle || !activePuzzle.active) return;
     playSound('sound-ui-click', 0.8);
-    playerSequence.push(id);
+    if (activePuzzle.type === 'sequence') handleSequenceClick(id);
+    else if (activePuzzle.type === 'pattern') handlePatternClick(id);
+    else handleTimingClick(id);
+}
+
+function failPuzzle(reason) {
+    if (activePuzzle && activePuzzle.timer) clearInterval(activePuzzle.timer);
+    activePuzzle.active = false;
+    document.getElementById('puzzle-status').textContent = `${reason} Restarting...`;
+    puzzleButtons.forEach(b => b.classList.remove('lit', 'target'));
+    setTimeout(() => startPuzzle(), 2000);
+}
+
+// -- sequence --
+function startSequencePuzzle(securityLevel) {
+    activePuzzle = { type: 'sequence', sequence: [], playerSequence: [], required: 3 + securityLevel, active: false };
+    document.getElementById('puzzle-status').textContent = `Required sequence length: ${activePuzzle.required}. Watch...`;
+    addToPuzzleSequence();
+}
+
+function addToPuzzleSequence() {
+    const p = activePuzzle;
+    p.playerSequence = [];
+    if (p.sequence.length < p.required) {
+        p.sequence.push(Math.floor(Math.random() * 9));
+    }
+    playPuzzleSequence();
+}
+
+async function playPuzzleSequence() {
+    const p = activePuzzle;
+    p.active = false; // ignore clicks during playback
+    for (const id of p.sequence) {
+        await delay(500);
+        if (activePuzzle !== p) return; // puzzle restarted mid-playback
+        puzzleButtons[id].classList.add('lit');
+        await delay(500);
+        puzzleButtons[id].classList.remove('lit');
+    }
+    if (activePuzzle !== p) return;
+    p.active = true;
+    document.getElementById('puzzle-status').textContent = `Your turn... (${p.sequence.length}/${p.required})`;
+}
+
+function handleSequenceClick(id) {
+    const p = activePuzzle;
+    if (p.playerSequence.length >= p.sequence.length) return;
+    p.playerSequence.push(id);
     puzzleButtons[id].classList.add('lit');
     setTimeout(() => puzzleButtons[id].classList.remove('lit'), 200);
 
-    const requiredLength = 3 + (currentInfiltratedBuilding.userData.securityLevel || 1);
-    const lastIndex = playerSequence.length - 1;
-    if (playerSequence[lastIndex] !== puzzleSequence[lastIndex]) {
-        document.getElementById('puzzle-status').textContent = "Incorrect! Sequence restarting...";
-        puzzleActive = false;
-        setTimeout(() => startPuzzle(), 2000);
+    const lastIndex = p.playerSequence.length - 1;
+    if (p.playerSequence[lastIndex] !== p.sequence[lastIndex]) {
+        failPuzzle('Incorrect!');
         return;
     }
-
-    if (playerSequence.length === puzzleSequence.length) {
-        if (puzzleSequence.length >= requiredLength) {
+    if (p.playerSequence.length === p.sequence.length) {
+        if (p.sequence.length >= p.required) {
             winPuzzle();
         } else {
-            setTimeout(() => addToPuzzleSequence(requiredLength), 1000);
+            setTimeout(() => addToPuzzleSequence(), 1000);
         }
     }
 }
 
+// -- pattern --
+function startPatternPuzzle(securityLevel) {
+    const count = Math.min(6, 2 + securityLevel);
+    const cells = [];
+    while (cells.length < count) {
+        const c = Math.floor(Math.random() * 9);
+        if (!cells.includes(c)) cells.push(c);
+    }
+    const p = { type: 'pattern', cells, found: [], active: false };
+    activePuzzle = p;
+    document.getElementById('puzzle-status').textContent = `Memorize the live circuits (${count})...`;
+    cells.forEach(c => puzzleButtons[c].classList.add('lit'));
+    setTimeout(() => {
+        if (activePuzzle !== p) return;
+        cells.forEach(c => puzzleButtons[c].classList.remove('lit'));
+        p.active = true;
+        document.getElementById('puzzle-status').textContent = `Re-trace the circuit... (0/${count})`;
+    }, 2500);
+}
+
+function handlePatternClick(id) {
+    const p = activePuzzle;
+    if (p.found.includes(id)) return;
+    if (!p.cells.includes(id)) {
+        failPuzzle('Wrong circuit!');
+        return;
+    }
+    p.found.push(id);
+    puzzleButtons[id].classList.add('lit');
+    document.getElementById('puzzle-status').textContent = `Re-trace the circuit... (${p.found.length}/${p.cells.length})`;
+    if (p.found.length === p.cells.length) winPuzzle();
+}
+
+// -- timing --
+function startTimingPuzzle(securityLevel) {
+    const p = { type: 'timing', roundsNeeded: 3, round: 0, cursor: 0, target: Math.floor(Math.random() * 9), active: true, timer: null };
+    activePuzzle = p;
+    puzzleButtons[p.target].classList.add('target');
+    document.getElementById('puzzle-status').textContent = `Tap the green node as the pulse hits it (0/${p.roundsNeeded})`;
+    const speed = Math.max(140, 380 - securityLevel * 50);
+    p.timer = setInterval(() => {
+        puzzleButtons[p.cursor].classList.remove('lit');
+        p.cursor = (p.cursor + 1) % 9;
+        puzzleButtons[p.cursor].classList.add('lit');
+    }, speed);
+}
+
+function handleTimingClick(id) {
+    const p = activePuzzle;
+    if (id !== p.target || p.cursor !== p.target) {
+        failPuzzle('Mistimed!');
+        return;
+    }
+    p.round++;
+    if (p.round >= p.roundsNeeded) {
+        winPuzzle();
+        return;
+    }
+    puzzleButtons[p.target].classList.remove('target');
+    p.target = Math.floor(Math.random() * 9);
+    puzzleButtons[p.target].classList.add('target');
+    document.getElementById('puzzle-status').textContent = `Tap the green node as the pulse hits it (${p.round}/${p.roundsNeeded})`;
+}
+
 function winPuzzle() {
-    puzzleActive = false;
+    if (activePuzzle && activePuzzle.timer) clearInterval(activePuzzle.timer);
+    activePuzzle = null;
+    puzzleButtons.forEach(b => b.classList.remove('lit', 'target'));
     gamePaused = true;
     document.getElementById('puzzle-overlay').style.display = 'none';
 
@@ -383,6 +540,8 @@ function winPuzzle() {
     });
 
     const securityLevel = currentInfiltratedBuilding.userData.securityLevel || 1;
+    // Entering during a listener's high-priority window pays a big multiplier.
+    const priorityMult = currentLabyrinth && currentLabyrinth.highPriorityEntry ? 2.5 : 1;
     let baseNotoriety = (abilities.firewall.buffActive ? 50 : 25) * securityLevel;
     let listenerBonus = 0;
     let rewardHTML = '';
@@ -392,13 +551,18 @@ function winPuzzle() {
         rewardHTML += `<br>+${listenerBonus} Notoriety (Listener Bonus)`;
     }
 
-    const nxsGain = (abilities.firewall.buffActive ? 20 : 10) * securityLevel;
-    const fragmentsGain = (abilities.firewall.buffActive ? 10 : 5) * securityLevel;
-    const totalNotorietyGain = baseNotoriety + listenerBonus;
+    const nxsGain = Math.round((abilities.firewall.buffActive ? 20 : 10) * securityLevel * priorityMult);
+    const fragmentsGain = Math.round((abilities.firewall.buffActive ? 10 : 5) * securityLevel * priorityMult);
+    const totalNotorietyGain = Math.round((baseNotoriety + listenerBonus) * priorityMult);
+    playerState.nxs = (playerState.nxs || 0) + nxsGain;
+    playerState.codeFragments = (playerState.codeFragments || 0) + fragmentsGain;
 
     document.getElementById('level-message').innerHTML = 'SYSTEM INFILTRATED.';
     document.getElementById('reward-details').innerHTML = `REWARDS:<br>+${baseNotoriety} Notoriety` + rewardHTML + `<br>+${nxsGain} $NXS<br>+${fragmentsGain} Code Fragments`;
 
+    if (priorityMult > 1) {
+        document.getElementById('reward-details').innerHTML += `<br>(HIGH-PRIORITY INTERCEPT x${priorityMult})`;
+    }
     if (abilities.firewall.buffActive) {
        document.getElementById('reward-details').innerHTML += `<br>(FIREWALL BUFF ACTIVE)`;
        abilities.firewall.buffActive = false;
@@ -478,14 +642,15 @@ function checkProximity() {
         }
 
         for (const obs of floor.obstacles) {
-            let hit;
+            let hit = false;
             if (obs.type === 'laser') {
                 // Collide with the whole sweeping beam, not just its center point.
                 const beamStart = obs.mesh.position.clone().addScaledVector(obs.dir, -obs.halfLength);
                 const beamEnd = obs.mesh.position.clone().addScaledVector(obs.dir, obs.halfLength);
                 hit = distanceToSegment(camera.position, beamStart, beamEnd) < 6;
-            } else {
-                hit = camera.position.distanceTo(obs.position) < 10;
+            } else if (!abilities.ghost.active) {
+                // Ghost makes you invisible to sentries; lasers are physical and still hit.
+                hit = sentryDetects(obs, floor);
             }
             if (hit) {
                 applyPenalty();
@@ -583,7 +748,26 @@ function addNotoriety(amount) {
 
 function setupAbilityControls() { abilities.scan.btn.addEventListener('click', useScan); abilities.firewall.btn.addEventListener('click', useFirewall); abilities.drain.btn.addEventListener('click', useDataDrain); abilities.ghost.btn.addEventListener('click', useGhost); abilities.listener.btn.addEventListener('click', deployListener); }
 function handleCooldown(ability) { ability.lastUsed = Date.now(); ability.btn.classList.add('cooldown'); setTimeout(() => { ability.btn.classList.remove('cooldown'); }, ability.cooldown); }
-function useScan() { if (Date.now() - abilities.scan.lastUsed < abilities.scan.cooldown) return; playSound('sound-scan-ping'); handleCooldown(abilities.scan); skyscraperMeshes.forEach(b => { if (b.userData.label && camera.position.distanceTo(b.position) < 1000) { b.userData.label.element.classList.add('scan-highlight'); setTimeout(() => b.userData.label.element.classList.remove('scan-highlight'), 4000); } }); }
+function useScan() {
+    if (Date.now() - abilities.scan.lastUsed < abilities.scan.cooldown) return;
+    playSound('sound-scan-ping');
+    handleCooldown(abilities.scan);
+    if (isCityVisible) {
+        // City recon: reveal security level and any high-priority intercept window.
+        skyscraperMeshes.forEach(b => {
+            if (b.userData.label && camera.position.distanceTo(b.position) < 1000) {
+                const el = b.userData.label.element;
+                const priority = b.userData.isHighPriority ? '🔊 ' : '';
+                el.textContent = `${priority}${b.userData.name} [SEC ${b.userData.securityLevel}]`;
+                el.classList.add('scan-highlight');
+                setTimeout(() => { el.classList.remove('scan-highlight'); el.textContent = b.userData.name; }, 4000);
+            }
+        });
+    } else if (currentLabyrinth) {
+        // Labyrinth recon: ping obstacles through the walls for a few seconds.
+        scanReveal.until = Date.now() + 4000;
+    }
+}
 function useFirewall() { if (Date.now() - abilities.firewall.lastUsed < abilities.firewall.cooldown || abilities.firewall.buffActive) return; playSound('sound-ui-click'); handleCooldown(abilities.firewall); abilities.firewall.buffActive = true; abilities.firewall.btn.classList.add('buff-active'); setTimeout(() => { if(abilities.firewall.buffActive) { abilities.firewall.buffActive = false; abilities.firewall.btn.classList.remove('buff-active'); } }, abilities.firewall.duration); }
 function useDataDrain() { if (Date.now() - abilities.drain.lastUsed < abilities.drain.cooldown || !isCityVisible) return; playSound('sound-ui-click'); handleCooldown(abilities.drain); abilities.drain.active = true; abilities.drain.position.copy(camera.position); setTimeout(() => { abilities.drain.active = false; }, abilities.drain.duration); }
 function useGhost() { if (Date.now() - abilities.ghost.lastUsed < abilities.ghost.cooldown || abilities.ghost.active) return; playSound('sound-ui-click'); handleCooldown(abilities.ghost); abilities.ghost.active = true; document.getElementById('radar').style.opacity = '0.2'; setTimeout(() => { abilities.ghost.active = false; document.getElementById('radar').style.opacity = '1'; }, abilities.ghost.duration); }
@@ -643,17 +827,11 @@ function deployListener() {
 }
 
 function simulateHighPriorityData() {
-    const buggedBuildings = skyscraperMeshes.filter(b => b.userData.hasListener && !b.userData.isHighPriority);
+    // One intercept window at a time, long enough to actually reach the
+    // building: this is the "go NOW" moment listeners are for.
+    if (skyscraperMeshes.some(b => b.userData.isHighPriority)) return;
+    const buggedBuildings = skyscraperMeshes.filter(b => b.userData.hasListener);
     if(buggedBuildings.length === 0) return;
-
-    skyscraperMeshes.forEach(b => {
-        if(b.userData.isHighPriority) {
-            b.userData.isHighPriority = false;
-            if(b.userData.listenerIcon) {
-                b.userData.listenerIcon.element.classList.remove('high-priority');
-            }
-        }
-    });
 
     const targetBuilding = buggedBuildings[Math.floor(Math.random() * buggedBuildings.length)];
     targetBuilding.userData.isHighPriority = true;
@@ -668,7 +846,7 @@ function simulateHighPriorityData() {
                 targetBuilding.userData.listenerIcon.element.classList.remove('high-priority');
             }
         }
-    }, 10000);
+    }, 45000);
 }
 
 function onWindowResize() { camera.aspect = window.innerWidth / window.innerHeight; camera.updateProjectionMatrix(); renderer.setSize(window.innerWidth, window.innerHeight); composer.setSize(window.innerWidth, window.innerHeight); labelRenderer.setSize(window.innerWidth, window.innerHeight); }
@@ -739,7 +917,31 @@ function setupMobileControls() {
 
 function createNetworkFloor(container, renderer) { const canvas = document.createElement('canvas'); canvas.width = 1024; canvas.height = 1024; const ctx = canvas.getContext('2d'); ctx.fillStyle = '#000510'; ctx.fillRect(0, 0, 1024, 1024); const gridStep = 50, pathColor = '#00ffff'; ctx.strokeStyle = pathColor; ctx.shadowColor = pathColor; ctx.lineWidth = 1; ctx.shadowBlur = 10; for (let x = 0; x < 1024; x += gridStep) { for (let y = 0; y < 1024; y += gridStep) { if (Math.random() > 0.5) { ctx.beginPath(); ctx.moveTo(x, y); ctx.lineTo(x + (Math.random() - 0.5) * gridStep * 2, y + (Math.random() - 0.5) * gridStep * 2); ctx.stroke(); } } } const floorTexture = new THREE.CanvasTexture(canvas); floorTexture.wrapS = THREE.RepeatWrapping; floorTexture.wrapT = THREE.RepeatWrapping; floorTexture.repeat.set(15, 15); floorTexture.anisotropy = renderer.capabilities.getMaxAnisotropy(); const floor = new THREE.Mesh(new THREE.PlaneGeometry(8000, 8000), new THREE.MeshStandardMaterial({ map: floorTexture, emissiveMap: floorTexture, emissive: 0xccffff, emissiveIntensity: 0.4, roughness: 1.0, color: 0x000000 })); floor.rotation.x = -Math.PI / 2; floor.position.y = -0.5; container.add(floor); }
 function generateDataTransfer() { if (!isCityVisible || skyscraperMeshes.length < 2) return; const origin = skyscraperMeshes[Math.floor(Math.random() * skyscraperMeshes.length)].position; const target = skyscraperMeshes[Math.floor(Math.random() * skyscraperMeshes.length)].position; const packetGeometry = new THREE.SphereGeometry(2.5, 8, 8); const packetMaterial = new THREE.MeshBasicMaterial({ color: skyscraperMeshes[0].material.emissive, toneMapped: false }); const packetMesh = new THREE.Mesh(packetGeometry, packetMaterial); packetMesh.position.copy(origin).y = 2; const packet = { mesh: packetMesh, origin: packetMesh.position.clone(), target: target.clone().setY(2), progress: 0, speed: 0.005 + Math.random() * 0.005 }; dataPackets.push(packet); cityGroup.add(packetMesh); }
-function updateDataTransfers() { const drainAbility = abilities.drain; dataPackets.forEach((packet, i) => { let currentSpeed = packet.speed; if (drainAbility.active && packet.mesh.position.distanceTo(drainAbility.position) < 150) { currentSpeed *= 0.2; } packet.progress += currentSpeed; if (packet.progress >= 1) { cityGroup.remove(packet.mesh); packet.mesh.geometry.dispose(); packet.mesh.material.dispose(); dataPackets.splice(i, 1); } else packet.mesh.position.lerpVectors(packet.origin, packet.target, packet.progress); }); }
+function disposePacket(packet) { cityGroup.remove(packet.mesh); packet.mesh.geometry.dispose(); packet.mesh.material.dispose(); }
+
+// Packets can be intercepted by touching them; Drain slows nearby packets so
+// they can be chased down, and slowed packets yield triple fragments.
+function updateDataTransfers() {
+    const drainAbility = abilities.drain;
+    dataPackets = dataPackets.filter(packet => {
+        let currentSpeed = packet.speed;
+        const slowed = drainAbility.active && packet.mesh.position.distanceTo(drainAbility.position) < 150;
+        if (slowed) currentSpeed *= 0.2;
+        packet.progress += currentSpeed;
+        packet.mesh.position.lerpVectors(packet.origin, packet.target, packet.progress);
+        if (session.userId && !gamePaused && packet.mesh.position.distanceTo(camera.position) < 15) {
+            const gain = slowed ? 3 : 1;
+            playerState.codeFragments = (playerState.codeFragments || 0) + gain;
+            showPickupToast(`+${gain} Code Fragment${gain > 1 ? 's' : ''}`);
+            playSound('sound-intercept', 0.4);
+            savePlayerState();
+            disposePacket(packet);
+            return false;
+        }
+        if (packet.progress >= 1) { disposePacket(packet); return false; }
+        return true;
+    });
+}
 function createScrollingCodeTexture(colorHex) { const canvas = document.createElement('canvas'), ctx = canvas.getContext('2d'); canvas.width = 256; canvas.height = 1024; const fontSize = 16; ctx.font = `bold ${fontSize}px monospace`; const chars = '0110101101001011101010100010101010101010101'; let code = ''; for (let i = 0; i < 20000; i++) code += chars[Math.floor(Math.random() * chars.length)]; return { canvas, context: ctx, texture: new THREE.CanvasTexture(canvas), code, fontSize, color: colorHex, scrollY: 0 }; }
 function updateTexture(data) { const { context, canvas, color, fontSize, code } = data; const charWidth = fontSize * 0.7, numColumns = Math.floor(canvas.width / charWidth), numRows = Math.floor(canvas.height / fontSize); context.fillStyle = '#000000'; context.fillRect(0, 0, canvas.width, canvas.height); context.fillStyle = `#${color}`; data.scrollY = (data.scrollY + numColumns) % code.length; for (let i = 0; i < numColumns; i++) { for (let j = 0; j < numRows; j++) { const charIndex = (data.scrollY + i * numRows + j) % code.length; context.fillText(code.charAt(charIndex), i * charWidth, j * fontSize); } } data.texture.needsUpdate = true; }
 
@@ -784,6 +986,37 @@ export function removePlayer(playerId) {
         otherPlayers.delete(playerId);
     }
 }
+
+// Dev/test hooks, exposed as window.__nhc by main.js. Lets automated smoke
+// tests (and manual debugging) drive labyrinth entry without random-walking
+// the city.
+export const debugApi = {
+    enterBuilding(index = 0) {
+        const building = skyscraperMeshes[index];
+        if (building) loadLabyrinthLevel(building);
+        return !!building;
+    },
+    teleportToVault() {
+        if (!currentLabyrinth) return false;
+        const lastFloor = currentLabyrinth.floors.length - 1;
+        teleportToFloor(lastFloor);
+        camera.position.copy(currentLabyrinth.floors[lastFloor].endPos).add(new THREE.Vector3(10, 0, 0));
+        return true;
+    },
+    info() {
+        const floor = currentLabyrinth ? currentLabyrinth.floors[currentLabyrinth.currentFloor] : null;
+        return {
+            inLabyrinth: !isCityVisible,
+            floors: currentLabyrinth ? currentLabyrinth.floors.length : 0,
+            sentries: floor ? floor.obstacles.filter(o => o.userData && o.userData.type === 'sentry').length : 0,
+            cones: floor ? floor.obstacles.filter(o => o.userData && o.userData.cone).length : 0,
+            lasers: floor ? floor.obstacles.filter(o => o.type === 'laser').length : 0,
+            puzzleType: activePuzzle ? activePuzzle.type : null,
+            building: currentInfiltratedBuilding ? currentInfiltratedBuilding.userData.name : null
+        };
+    },
+    returnToCity
+};
 
 function createPlayerAvatar(playerData) {
     const factionInfo = factions[playerData.faction] || { color: '#aaaaaa' };

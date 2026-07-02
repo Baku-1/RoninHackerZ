@@ -10,7 +10,9 @@ This project is a cyberpunk-themed open world hacking adventure on the Ronin cha
 - **Bounty Board:** Missions and achievements for players.
 - **Chat System:** In-game chat overlay for real-time communication.
 - **Faction System:** Players choose factions and compete for city dominance.
-- **Puzzle Mini-games:** Skill-based challenges for rewards.
+- **Stealth Sentries:** Patrol drones with visible vision cones — stay out of the cone, break line of sight behind walls, or go Ghost to slip past.
+- **Hacker Toolkit:** Scan (recon: security levels in the city, x-ray obstacle ping in labyrinths), Ghost (sentry invisibility), Drain + packet interception (slow data packets and grab them for Code Fragments), Firewall (reward buff), and Listeners (high-priority intercept windows pay a 2.5x infiltration multiplier).
+- **Puzzle Mini-games:** Three vault puzzle types — sequence memory, circuit-trace, and pulse-timing — rotating per building.
 - **Responsive Design:** Mobile and desktop support with touch and drag controls.
   
 ## Getting Started
