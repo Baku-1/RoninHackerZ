@@ -59,12 +59,14 @@ function client() {
     assert.strictEqual(welcomeA.state, null, 'new player has no saved state');
     pass('hello -> welcome with null state for new player');
 
-    a.send({ t: 'save', state: { playerName: 'Neo', faction: 'Data Kraken', infiltrations: 3, level: 2, hacked: 'ignored-field' } });
+    a.send({ t: 'save', state: { playerName: 'Neo', faction: 'Data Kraken', infiltrations: 3, level: 2, nxs: 40, codeFragments: 12, hacked: 'ignored-field' } });
     const stateA = await a.expect(m => m.t === 'state', 'state echo');
     assert.strictEqual(stateA.state.playerName, 'Neo');
     assert.strictEqual(stateA.state.infiltrations, 3);
+    assert.strictEqual(stateA.state.nxs, 40);
+    assert.strictEqual(stateA.state.codeFragments, 12);
     assert.strictEqual(stateA.state.hacked, undefined, 'non-whitelisted field dropped');
-    pass('save persists whitelisted fields and echoes state');
+    pass('save persists whitelisted fields (incl. currencies) and echoes state');
 
     // client B joins, should see A in roster; A should see B join
     const b = client();

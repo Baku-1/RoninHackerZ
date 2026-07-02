@@ -19,6 +19,8 @@ export const playerState = {
     listenersAvailable: 5,
     deployedListenerCount: 0,
     infiltrations: 0,
+    nxs: 0,
+    codeFragments: 0,
     bounties: [],
     playerName: 'OFFLINE',
     faction: 'Unassigned',
@@ -52,9 +54,9 @@ export function savePlayerState() {
     if (stateListener) stateListener();
     if (!session.userId) return;
     const { level, notoriety, notorietyToNextLevel, listenersAvailable, deployedListenerCount,
-            infiltrations, bounties, playerName, faction, walletAddress } = playerState;
+            infiltrations, nxs, codeFragments, bounties, playerName, faction, walletAddress } = playerState;
     net.send({ t: 'save', state: { level, notoriety, notorietyToNextLevel, listenersAvailable,
-            deployedListenerCount, infiltrations, bounties, playerName, faction, walletAddress } });
+            deployedListenerCount, infiltrations, nxs, codeFragments, bounties, playerName, faction, walletAddress } });
 }
 
 export function initializeBounties() {

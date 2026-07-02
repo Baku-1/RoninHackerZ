@@ -78,5 +78,8 @@ async function connectAndStart() {
 
 document.getElementById('connect-wallet-btn').addEventListener('click', connectAndStart);
 
+// Dev/test hooks for smoke tests and console debugging (pre-alpha only).
+window.__nhc = { debug: game.debugApi, playerState };
+
 game.init();
 game.animate();

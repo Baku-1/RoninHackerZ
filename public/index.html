@@ -179,6 +179,21 @@
             margin-bottom: 8px;
             color: #00ffde;
         }
+        #currency-count {
+            font-size: 1.0em;
+            margin-bottom: 8px;
+            color: #ffd700;
+        }
+        #pickup-toast {
+            font-size: 0.9em;
+            color: #7CFC00;
+            text-shadow: 0 0 8px #7CFC00;
+            height: 1.2em;
+            margin-bottom: 8px;
+            opacity: 0;
+            transition: opacity 0.4s;
+        }
+        #pickup-toast.show { opacity: 1; }
         #notoriety-bar-bg {
             width: 100%;
             height: 15px;
@@ -272,6 +287,10 @@
         .puzzle-btn.lit {
             background-color: #00ffde; box-shadow: 0 0 20px #00ffde;
             transform: scale(1.05);
+        }
+        .puzzle-btn.target {
+            border-color: #7CFC00;
+            box-shadow: 0 0 15px #7CFC00;
         }
         #puzzle-status { margin-top: 20px; font-size: 0.8em; height: 30px; }
         
@@ -430,6 +449,8 @@
             <div id="player-level">LVL 1</div>
         </div>
         <div id="listener-count">Listeners: 5 / 5</div>
+        <div id="currency-count">$NXS: 0 | Fragments: 0</div>
+        <div id="pickup-toast"></div>
         <div id="notoriety-bar-bg"><div id="notoriety-bar-fill"></div></div>
     </div>
     <div id="joystick">

@@ -22,8 +22,8 @@ const POS_MIN_INTERVAL_MS = 100;
 // Only fields the client legitimately owns are persisted from a save message.
 const SAVEABLE_FIELDS = [
     'level', 'notoriety', 'notorietyToNextLevel', 'listenersAvailable',
-    'deployedListenerCount', 'infiltrations', 'bounties', 'playerName',
-    'faction', 'walletAddress'
+    'deployedListenerCount', 'infiltrations', 'nxs', 'codeFragments',
+    'bounties', 'playerName', 'faction', 'walletAddress'
 ];
 
 // ---- persistence ----

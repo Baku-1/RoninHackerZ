@@ -22,6 +22,7 @@ export function playSound(soundId, volume = 0.5) {
         const presets = {
             'sound-ui-click':        { type: 'square',   duration: 0.07, notes: [880] },
             'sound-scan-ping':       { type: 'sine',     duration: 0.4,  notes: [1200] },
+            'sound-intercept':       { type: 'sine',     duration: 0.15, notes: [1400, 1800] },
             'sound-penalty':         { type: 'sawtooth', duration: 0.5,  notes: [220, 160] },
             'sound-bounty-complete': { type: 'triangle', duration: 0.3,  notes: [660, 880, 1320] }
         };

@@ -45,9 +45,19 @@ export function renderBountyBoard() {
 
 export function updateAllUI() {
     document.getElementById('player-name').textContent = playerState.playerName || 'OFFLINE';
+    document.getElementById('currency-count').textContent = `$NXS: ${playerState.nxs || 0} | Fragments: ${playerState.codeFragments || 0}`;
     updateNotorietyBar();
     updateListenerCount();
     renderBountyBoard();
+}
+
+let pickupToastTimer = null;
+export function showPickupToast(text) {
+    const toast = document.getElementById('pickup-toast');
+    toast.textContent = text;
+    toast.classList.add('show');
+    clearTimeout(pickupToastTimer);
+    pickupToastTimer = setTimeout(() => toast.classList.remove('show'), 1500);
 }
 
 export function setPlayerLabel(element, playerData) {
