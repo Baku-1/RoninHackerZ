@@ -415,6 +415,7 @@
         <button id="chat-toggle-btn" class="menu-btn" title="World Chat">💬</button>
         <button id="leaderboard-btn" class="menu-btn" title="Leaderboard">🏆</button>
         <button id="settings-btn" class="menu-btn" title="Settings">⚙️</button>
+        <button id="refinement-btn" class="menu-btn" title="Refinement">⚗️</button>
         <a href="https://discord.gg/m4dhphzW" target="_blank" class="menu-btn" title="Give Feedback on Discord">👾</a>
     </div>
 
@@ -726,7 +727,8 @@
             cityGroup.visible = false;
             otherPlayers.forEach(p => p.avatar.visible = false);
             
-            const floorCount = 2;
+            const buildingSecurity = building.userData.securityLevel || 1;
+            const floorCount = Math.min(3, 1 + Math.floor(buildingSecurity / 2));
             currentLabyrinth = {
                 group: new THREE.Group(),
                 floors: [],
@@ -750,8 +752,10 @@
             const obstacles = [];
             const mazeWalls = [];
             let openCoords = [];
-            const mazeSize = 15, cellSize = 50, wallHeight = 20;
+            const securityLevel = building.userData.securityLevel || 1;
+            const mazeSize = 11 + securityLevel * 2, cellSize = 50, wallHeight = 20;
             const maze = generateMaze(mazeSize, mazeSize);
+            braidMaze(maze, mazeSize, 0.1);
 
             const wallMaterial = new THREE.MeshStandardMaterial({ 
                 color: building.material.emissive, emissive: building.material.emissive, 
@@ -759,7 +763,6 @@
             });
             const wallGeometry = new THREE.BoxGeometry(cellSize, wallHeight, cellSize);
 
-            const securityLevel = building.userData.securityLevel || 1;
             const numSentries = securityLevel;
             const numLasers = Math.floor(securityLevel / 2);
 
@@ -799,13 +802,16 @@
                     sentry.userData.path = [openCoords.splice(Math.floor(Math.random() * openCoords.length), 1)[0], openCoords.splice(Math.floor(Math.random() * openCoords.length), 1)[0]];
                     sentry.userData.pathProgress = 0;
                     sentry.userData.pathDirection = 1;
+                    sentry.userData.speed = 0.15 + securityLevel * 0.05;
                     obstacles.push(sentry);
                     mazeGroup.add(sentry);
                 }
             }
             
+            const laserSpan = (mazeSize / 2 - 1) * cellSize;
             for(let i = 0; i < numLasers; i++) {
-                const laser = createLaser(new THREE.Vector3(-100, 10 + yOffset, -150 - (i * 50)), new THREE.Vector3(100, 10 + yOffset, -150 - (i * 50)));
+                const laserZ = (Math.random() - 0.5) * (mazeSize - 4) * cellSize;
+                const laser = createLaser(new THREE.Vector3(-laserSpan, 10 + yOffset, laserZ), new THREE.Vector3(laserSpan, 10 + yOffset, laserZ));
                 obstacles.push(laser);
                 mazeGroup.add(laser.mesh);
             }
@@ -850,7 +856,7 @@
                         obs.mesh.position.lerpVectors(obs.start, obs.end, obs.progress);
                     } else if (obs.userData.type === 'sentry') {
                          if (obs.userData.path && obs.userData.path[0] && obs.userData.path[1]) {
-                            obs.userData.pathProgress += delta * 0.2 * obs.userData.pathDirection;
+                            obs.userData.pathProgress += delta * (obs.userData.speed || 0.2) * obs.userData.pathDirection;
                             if(obs.userData.pathProgress > 1 || obs.userData.pathProgress < 0) {
                                 obs.userData.pathDirection *= -1;
                                 obs.userData.pathProgress = Math.max(0, Math.min(1, obs.userData.pathProgress));
@@ -1083,7 +1089,7 @@
             checkProximity();
             updateObstacles(delta);
             
-            if (userId && now - lastPositionUpdateTime > 100 && isCityVisible) {
+            if (userId && now - lastPositionUpdateTime > 250 && isCityVisible) {
                  updatePlayerPosition();
                  lastPositionUpdateTime = now;
             }
@@ -1106,6 +1112,21 @@
         }
         
         function generateMaze(w, h) { const matrix = Array(h).fill(null).map(() => Array(w).fill(1)); const path = (r, c) => { matrix[r][c] = 0; const dirs = [[0, 1], [0, -1], [1, 0], [-1, 0]].sort(() => Math.random() - 0.5); for (const [dr, dc] of dirs) { const nr = r + dr * 2; const nc = c + dc * 2; if (nr > 0 && nr < h-1 && nc > 0 && nc < w-1 && matrix[nr][nc] === 1) { matrix[r + dr][c + dc] = 0; path(nr, nc); } } }; path(1,1); if(h > 2 && w > 2) matrix[h-2][w-2] = 0; return matrix; }
+
+        // Knock out a fraction of interior walls that separate two open cells, turning the
+        // perfect maze (single solution path) into one with loops and alternate routes.
+        function braidMaze(maze, size, chance) {
+            for (let i = 1; i < size - 1; i++) {
+                for (let j = 1; j < size - 1; j++) {
+                    if (maze[i][j] !== 1) continue;
+                    const horizontalGap = maze[i][j-1] === 0 && maze[i][j+1] === 0;
+                    const verticalGap = maze[i-1][j] === 0 && maze[i+1][j] === 0;
+                    if ((horizontalGap !== verticalGap) && Math.random() < chance) {
+                        maze[i][j] = 0;
+                    }
+                }
+            }
+        }
         
         function addNotoriety(amount) { 
             playerState.notoriety = Math.max(0, playerState.notoriety + amount); 
@@ -1126,9 +1147,128 @@
             savePlayerState();
         }
         
-        function updateNotorietyBar() { 
-            document.getElementById('notoriety-bar-fill').style.width = `${(playerState.notoriety / playerState.notorietyToNextLevel) * 100}%`; 
+        function updateNotorietyBar() {
+            document.getElementById('notoriety-bar-fill').style.width = `${(playerState.notoriety / playerState.notorietyToNextLevel) * 100}%`;
             document.getElementById('player-level').textContent = `LVL ${playerState.level}`;
+        }
+
+        function updateAllUI() {
+            document.getElementById('player-name').textContent = playerState.playerName || 'OFFLINE';
+            updateNotorietyBar();
+            updateListenerCount();
+            renderBountyBoard();
+        }
+
+        function renderBountyBoard() {
+            const list = document.getElementById('bounty-list');
+            list.innerHTML = '';
+            if (!playerState.bounties || playerState.bounties.length === 0) {
+                const li = document.createElement('li');
+                li.textContent = 'No active bounties.';
+                list.appendChild(li);
+                return;
+            }
+            playerState.bounties.forEach(bounty => {
+                const li = document.createElement('li');
+                li.textContent = bounty.description;
+                if (bounty.completed) li.classList.add('completed');
+                list.appendChild(li);
+            });
+        }
+
+        function initializeBounties() {
+            const easyTargets = dApps.filter(d => d.securityLevel <= 2);
+            const hardTargets = dApps.filter(d => d.securityLevel >= 3);
+            const easy = easyTargets[Math.floor(Math.random() * easyTargets.length)];
+            const hard = hardTargets[Math.floor(Math.random() * hardTargets.length)];
+            playerState.bounties = [
+                { type: 'infiltrate', target: easy.name, bonus: 50, completed: false, description: `Infiltrate ${easy.name} (+50)` },
+                { type: 'infiltrate', target: hard.name, bonus: 150, completed: false, description: `Crack high-security ${hard.name} (+150)` },
+                { type: 'deploy', target: 2, bonus: 75, completed: false, description: 'Deploy 2 listeners (+75)' }
+            ];
+        }
+
+        async function savePlayerState() {
+            if (!userId) return;
+            updateAllUI();
+            try {
+                const playerDocRef = doc(db, 'artifacts', appId, 'users', userId, 'nhc_player_state', 'data');
+                await setDoc(playerDocRef, { ...playerState }, { merge: true });
+                const publicDocRef = doc(db, 'artifacts', appId, 'public/data/players', userId);
+                await setDoc(publicDocRef, {
+                    playerName: playerState.playerName,
+                    faction: playerState.faction,
+                    level: playerState.level,
+                    infiltrations: playerState.infiltrations || 0,
+                    lastSeen: serverTimestamp()
+                }, { merge: true });
+            } catch (error) {
+                console.error("Error saving player state:", error);
+            }
+        }
+
+        const positionSync = { lastWrite: 0, lastPos: new THREE.Vector3(Infinity, Infinity, Infinity) };
+        function updatePlayerPosition() {
+            if (!userId) return;
+            const now = Date.now();
+            const moved = camera.position.distanceToSquared(positionSync.lastPos) > 1;
+            // Skip the write when idle, but heartbeat every 10s so cleanupInactivePlayers
+            // doesn't reap players who are standing still.
+            if (!moved && now - positionSync.lastWrite < 10000) return;
+            positionSync.lastWrite = now;
+            positionSync.lastPos.copy(camera.position);
+            const publicDocRef = doc(db, 'artifacts', appId, 'public/data/players', userId);
+            setDoc(publicDocRef, {
+                playerName: playerState.playerName,
+                faction: playerState.faction,
+                infiltrations: playerState.infiltrations || 0,
+                position: camera.position.toArray(),
+                quaternion: camera.quaternion.toArray(),
+                lastSeen: serverTimestamp()
+            }, { merge: true }).catch(error => console.error("Error syncing position:", error));
+        }
+
+        // No audio assets ship with the prototype, so synthesize short cues with WebAudio.
+        let audioCtx = null;
+        let ambientDrone = null;
+        function playSound(soundId, volume = 0.5) {
+            try {
+                if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+                if (audioCtx.state === 'suspended') audioCtx.resume();
+                if (soundId === 'sound-ambient') {
+                    if (ambientDrone) return;
+                    const osc = audioCtx.createOscillator();
+                    const gain = audioCtx.createGain();
+                    osc.type = 'sine';
+                    osc.frequency.value = 55;
+                    gain.gain.value = volume * 0.05;
+                    osc.connect(gain).connect(audioCtx.destination);
+                    osc.start();
+                    ambientDrone = { osc, gain };
+                    return;
+                }
+                const presets = {
+                    'sound-ui-click':        { type: 'square',   duration: 0.07, notes: [880] },
+                    'sound-scan-ping':       { type: 'sine',     duration: 0.4,  notes: [1200] },
+                    'sound-penalty':         { type: 'sawtooth', duration: 0.5,  notes: [220, 160] },
+                    'sound-bounty-complete': { type: 'triangle', duration: 0.3,  notes: [660, 880, 1320] }
+                };
+                const preset = presets[soundId] || presets['sound-ui-click'];
+                preset.notes.forEach((freq, i) => {
+                    const osc = audioCtx.createOscillator();
+                    const gain = audioCtx.createGain();
+                    osc.type = preset.type;
+                    osc.frequency.value = freq;
+                    const start = audioCtx.currentTime + i * 0.12;
+                    gain.gain.setValueAtTime(volume * 0.3, start);
+                    gain.gain.exponentialRampToValueAtTime(0.001, start + preset.duration);
+                    osc.connect(gain).connect(audioCtx.destination);
+                    osc.start(start);
+                    osc.stop(start + preset.duration);
+                });
+            } catch (error) {
+                // Audio is non-essential; never let it break gameplay.
+            }
         }
         
         function setupAbilityControls() { abilities.scan.btn.addEventListener('click', useScan); abilities.firewall.btn.addEventListener('click', useFirewall); abilities.drain.btn.addEventListener('click', useDataDrain); abilities.ghost.btn.addEventListener('click', useGhost); abilities.listener.btn.addEventListener('click', deployListener); }
