@@ -5,13 +5,19 @@
   "description": "New Hack City - a cyberpunk open world hacking adventure on Ronin",
   "main": "server/server.js",
   "scripts": {
-    "start": "node server/server.js"
+    "start": "node server/server.js",
+    "test": "node tests/protocol.test.js",
+    "lint": "eslint ."
   },
   "engines": {
     "node": ">=18"
   },
   "dependencies": {
     "ws": "^8.18.0"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.0.0",
+    "eslint": "^9.0.0"
   },
   "license": "MIT"
 }

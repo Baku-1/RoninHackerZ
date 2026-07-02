@@ -49,6 +49,37 @@ This project is a cyberpunk-themed open world hacking adventure on the Ronin cha
 - [ ] Enhanced city and player interactions
 - [ ] In-game events and missions
 
+## Development
+
+```bash
+npm run lint   # ESLint over client, server, and tests
+npm test       # end-to-end protocol test (boots the real server)
+```
+
+The client lives in `public/` as native ES modules (no build step): `js/main.js` is the
+entry point, with `game.js` (Three.js world/gameplay), `net.js` (WebSocket client),
+`ui.js` (HUD/modals/chat), `state.js` (player state + persistence), and `audio.js`.
+
+## Deployment
+
+The server binds plain HTTP/WS on `PORT` (default 3000). In production, put a TLS
+reverse proxy in front so the page and socket are served over `https://`/`wss://`
+(the client picks `wss` automatically when the page is https). Example with Caddy:
+
+```
+game.example.com {
+    reverse_proxy localhost:3000
+}
+```
+
+(nginx works the same way — proxy `/` to the port with `Upgrade`/`Connection` headers
+for WebSocket.) Run the process under a supervisor (systemd, pm2) so it restarts on
+failure.
+
+**Important:** player data persists to `server/data.json` (gitignored). Back it up and
+keep it on a persistent volume — a redeploy that wipes the working directory wipes
+playtest progress with it.
+
 ## Contributing
 
 Pull requests welcome! Please open an issue to discuss your ideas.

@@ -12,7 +12,8 @@ const path = require('path');
 const { WebSocketServer } = require('ws');
 
 const PORT = process.env.PORT || 3000;
-const DATA_FILE = path.join(__dirname, 'data.json');
+const DATA_FILE = process.env.NHC_DATA_FILE || path.join(__dirname, 'data.json');
+const PUBLIC_DIR = path.join(__dirname, '..', 'public');
 const CHAT_HISTORY_LIMIT = 100;
 const CHAT_MESSAGE_MAX_LENGTH = 200;
 const PLAYER_NAME_MAX_LENGTH = 24;
@@ -47,17 +48,29 @@ function persist() {
 }
 
 // ---- static hosting ----
+const MIME_TYPES = {
+    '.html': 'text/html; charset=utf-8',
+    '.js': 'text/javascript; charset=utf-8',
+    '.css': 'text/css; charset=utf-8',
+    '.json': 'application/json',
+    '.png': 'image/png',
+    '.svg': 'image/svg+xml',
+    '.ico': 'image/x-icon'
+};
+
 const server = http.createServer((req, res) => {
-    if (req.method === 'GET' && (req.url === '/' || req.url === '/index.html')) {
-        fs.readFile(path.join(__dirname, '..', 'index.html'), (err, buf) => {
-            if (err) { res.writeHead(500); res.end('server error'); return; }
-            res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
-            res.end(buf);
-        });
-        return;
-    }
-    res.writeHead(404);
-    res.end('not found');
+    if (req.method !== 'GET') { res.writeHead(405); res.end('method not allowed'); return; }
+    let urlPath;
+    try { urlPath = decodeURIComponent((req.url || '/').split('?')[0]); } catch { res.writeHead(400); res.end('bad request'); return; }
+    const relPath = urlPath === '/' ? 'index.html' : urlPath.replace(/^\/+/, '');
+    const filePath = path.normalize(path.join(PUBLIC_DIR, relPath));
+    if (!filePath.startsWith(PUBLIC_DIR + path.sep)) { res.writeHead(403); res.end('forbidden'); return; }
+    fs.readFile(filePath, (err, buf) => {
+        if (err) { res.writeHead(404); res.end('not found'); return; }
+        const type = MIME_TYPES[path.extname(filePath).toLowerCase()] || 'application/octet-stream';
+        res.writeHead(200, { 'Content-Type': type });
+        res.end(buf);
+    });
 });
 
 // ---- realtime ----
